@@ -1,0 +1,32 @@
+#!/bin/sh
+
+/bin/busybox --install -s
+
+
+# mount devtmpfs with all the dev special files
+/bin/mount -t devtmpfs devtmpfs /dev
+exec 0</dev/console
+exec 1>/dev/console
+exec 2>/dev/console
+/bin/mkdir /dev/pts
+/bin/mount -t devpts devpts /dev/pts 
+echo "Opened initial console..."
+
+echo ""
+echo "Waiting for SD card to settle..."
+/bin/sleep 3
+
+ERROR=""
+
+# mount linux virtual filesystems
+/bin/mount -t sysfs sys /sys
+/bin/mount -t proc proc /proc
+
+
+echo "This is the Debug initramfs, we are dropping to the initramfs shell now..."
+echo "Launching root shell. Good luck..."
+echo ""		
+
+export PATH="/bin:/usr/bin:/sbin:/usr/sbin"
+exec /bin/sh
+

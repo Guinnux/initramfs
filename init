@@ -1,0 +1,295 @@
+#!/bin/sh
+
+/bin/busybox --install -s
+
+# Because busybox ash doesn't have too much functionality (relative to bash), the error checking in this initramfs is a little crude
+# This init script can be broken down into phases, some of which will jump to the shell if there is a failure.
+# 	Phase 1: Initramfs setup				|
+#	Phase 2: Filesystem switch				|
+#		sub-phase 1: rootfs switch		|	|
+#		sub-phase 2: rescue switch	      <-/  |	|
+#	Phase 3: Initramfs shell (a bad place to be)	 <-/  <-/
+# The arrows indicate where and error in a phase will take us
+
+
+### PHASE 1: Initramfs setup ###
+
+ERROR=""
+
+# mount devtmpfs with all the dev special files
+/bin/mount -t devtmpfs devtmpfs /dev
+# if the kernel is not built with devtmpfs support we attempt make the console and null device files so we can show the error
+if [ ! "$?" -eq "0" ]; then
+	/bin/mknod -m 600 /dev/console c 5 1
+	/bin/mknod -m 666 /dev/null c 1 3
+	ERROR="This kernel is built without support for devtmpfs, it must be built with devtmpfs support to boot into the rootfs using this initramfs."
+fi
+exec 0</dev/console
+exec 1>/dev/console
+exec 2>/dev/console
+/bin/mkdir /dev/pts
+/bin/mount -t devpts devpts /dev/pts 
+echo "Opened initial console..."
+
+# there is no point continuing with phase 1 without some proper device file framework
+if [ -z "$ERROR" ]; then
+	echo ""
+
+	# mount linux virtual filesystems
+	echo "Mounting sysfs to /sys..."
+	/bin/mount -t sysfs sys /sys > /var/tmp.log 2>&1
+	if [ ! "$?" -eq "0" ]; then
+		ERROR="Failed to mount sysfs, perhaps your kernel was not configured with SYSFS."
+	fi
+	if [ -z "$ERROR" ]; then
+		echo "Mounting proc fs to /proc"
+		/bin/mount -t proc proc /proc > /var/tmp.log 2>&1
+		if [ ! "$?" -eq "0" ]; then
+			ERROR="Failed to mount the proc fs, perhaps your kernel was not configured with PROCFS."
+		fi
+	fi
+	
+	# with proc mounted we can parse the the commandline options and assign defaults if an option is not given	
+	if [ -z "$ERROR" ]; then
+		# get commandline options
+		for i in $(cat /proc/cmdline); do
+			case $i in
+				root\=*)
+					root="`echo $i | awk -F"root=" '{print $2}' | awk -F" " '{print $1}'`"
+					;;
+				root_type\=*)
+					root_type="-t `echo $i | awk -F"root_type=" '{print $2}' | awk -F" " '{print $1}'`"
+					;;
+				root_opts\=*)
+					root_opts="-o `echo $i | awk -F"root_opts=" '{print $2}' | awk -F" " '{print $1}'`"
+					;;
+				init\=*)
+					init="`echo $i | awk -F"init=" '{print $2}' | awk -F" " '{print $1}'`"
+					;;
+			esac
+		done
+		#first, if one "root" cmdline argument is given all must be given
+		if [ -n "$root" ] || [ -n "$root_type" ] || [ -n "$root_opts" ]; then	#if one of these is given
+			if [ -z "$root" ] || [ -z "$root_type" ] || [ -z "$root_opts" ]; then	#but one or more is not given
+				ERROR="Failed to determine cmdline options. When providing cmdline options(root, root_type and root_opts), all must be given."
+			fi
+		fi
+		#defaults
+		if [ -z "$root" ]; then root="/dev/mmcblk0p1"; fi
+		if [ -z "$root_type" ]; then root_type="-t ext4"; fi
+		if [ -z "$root_opts" ]; then root_opts="-o data=journal"; fi
+		if [ -z "$init" ]; then init="/sbin/init"; fi
+	fi
+fi
+
+### PHASE 2: Filesystem switch  ###
+
+# keep checking if the root block device is available or timeout otherwise
+let "time_count = 1"
+if [ -z "$ERROR" ]; then
+	while [ ! -h "/sys/class/block/`basename $root`" ] && [ ! "$time_count" -gt "6" ]; do
+		# sleep for half a second
+		/bin/usleep 500000
+		let "time_count += 1"
+	done
+fi
+
+if [ -z "$ERROR" ]; then
+
+	# check that the root block device exists in case we timed out above	
+	if [ -h "/sys/class/block/`basename $root`" ]; then
+
+		echo "Running file system check on root..."
+		/sbin/e2fsck -v -p $root > /var/tmp.log 2>&1 
+		if [ "$?" -eq "0" ]; then
+			echo "...no problems found"
+			cat /var/tmp.log >> /var/gnxBoot.log
+		elif [ "$?" -eq "1" ]; then
+			echo "...problems corrected, continuing"
+			echo -e "\nFile system check fixed some problems, this was the output:" >> /var/gnxBoot.log
+			cat /var/tmp.log >> /var/gnxBoot.log
+		# we do not handle exit code 2 which represents problems corrected but reboot required
+		# this is because it should never happen, the kernel is not handled in any way by fsck
+		else
+			ERROR="The file system check failed"
+			echo -e "\nFile system check failed , this was the output:" >> /var/gnxBoot.log
+			cat /var/tmp.log >> /var/gnxBoot.log
+		fi
+
+		if [ -z "$ERROR" ]; then
+			echo "Mounting root file system... "
+			/bin/mount $root_type $root_opts $root /mnt > /var/tmp.log 2>&1
+			if [ "$?" -ne "0" ]; then
+				ERROR="The root file system failed to mount."
+				echo -e "\nMounting root file system..." >> /var/gnxBoot.log
+				cat /var/tmp.log >> /var/gnxBoot.log
+			fi
+		fi
+
+		if [ -z "$ERROR" ]; then
+			echo "Moving mounted device files to rootfs... "
+			/bin/mount --move /dev /mnt/dev > /var/tmp.log 2>&1
+			if [ "$?" -ne "0" ]; then
+				# We should unmount the rootfs then, or else rescue will fail to mount
+				/bin/umount /mnt
+				ERROR="Failed to move device files to rootfs."
+				echo -e "\nMoving mounted device files to rootfs..."  >> /var/gnxBoot.log
+				cat /var/tmp.log >> /var/gnxBoot.log
+			fi
+		fi
+
+		if [ -z "$ERROR" ]; then
+			echo "Switching to root file system..."
+			if [ -e "/mnt/$init" ]; then
+				/bin/umount /sys
+				/bin/umount /proc
+				cp /var/gnxBoot.log /mnt/var/log/gnxBoot.log
+				exec /sbin/switch_root -c /dev/console /mnt $init
+			else
+				ERROR="$init not found on root file system!Aborting..."
+				# We should unmount the rootfs then, or else rescue will fail to mount
+				/bin/umount /mnt
+			fi
+		fi
+	else
+		ERROR="The root block device, $root, was not found. Available block devices are:\n `/bin/ls -1 /sys/class/block | grep -v loop | grep -v ram | tr ' ' '\n' ` "
+	fi
+
+	echo -e "$ERROR \n" >> /var/gnxBoot.log
+	echo -e "\nSwitched to backup system...\n" >> /var/gnxBoot.log
+
+	echo  -e "$ERROR"
+	echo "..failed to boot Guinnux."
+	echo ""
+	echo "Switching to backup system..."
+	echo ""
+
+	ERROR=""
+
+	echo "Mounting jffs2 rescue file system..."
+	/bin/mount -t jffs2 -o ro /dev/mtdblock2 /mnt/rescRO > /var/tmp.log 2>&1
+	if [ "$?" -ne "0" ]; then
+		ERROR="Failed to mount the rescue filesystem..."
+		echo -e "\nMounting jffs2 rescue file system..." >> /var/gnxBoot.log
+		cat /var/tmp.log >> /var/gnxBoot.log
+	fi
+
+	if [ -z "$ERROR" ]; then
+		echo "Mounting rescue temporary file system for volatile overlay..."
+		/bin/mount -t tmpfs -o size=50% rescRW /mnt/rescRW  > /var/tmp.log 2>&1
+		if [ "$?" -ne "0" ]; then
+			# undo anything that has been done up to this point because of failure
+			/bin/umount /mnt/rescRO
+
+			ERROR="Failed to create temporary file system for rescue system volatile overlay."
+			echo -e "\nMounting rescue temporary file system for volatile overlay..."  >> /var/gnxBoot.log
+			cat /var/tmp.log >> /var/gnxBoot.log
+		fi
+	fi
+
+	if [ -z "$ERROR" ]; then
+		echo "Overlaying rescue file systems..."
+		/bin/mount -t aufs -o br=/mnt/rescRW=rw:/mnt/rescRO=ro rescue /mnt/rescue  > /var/tmp.log 2>&1
+		if [ "$?" -ne "0" ]; then
+			# undo anything that has been done up to this point because of failure
+                        /bin/umount /mnt/rescRO
+                        /bin/umount /mnt/rescRW
+
+			ERROR="Failed to overlay read-write file system on rescue"
+			echo -e "\nOverlaying rescue file systems..."  >> /var/gnxBoot.log
+			cat /var/tmp.log >> /var/gnxBoot.log
+		fi
+	fi
+
+	if [ -z "$ERROR" ]; then
+		echo "Moving mounted device files to rescue fs... "
+		if [ ! -e "/mnt/rescue/dev" ]; then
+			/bin/mkdir "/mnt/rescue/dev" > /var/tmp.log 2>&1
+		fi
+		/bin/mount --move /dev /mnt/rescue/dev >> /var/tmp.log 2>&1
+		if [ "$?" -ne "0" ]; then
+			# undo anything that has been done up to this point because of failure
+			/bin/umount /mnt/rescue
+                        /bin/umount /mnt/rescRO
+			/bin/umount /mnt/rescRW
+
+			ERROR="Failed to move device files to rescue fs."
+			echo -e "\nMoving mounted device files to rescue fs..."  >> /var/gnxBoot.log
+			cat /var/tmp.log >> /var/gnxBoot.log
+		fi
+	fi
+
+	if [ -z "$ERROR" ]; then
+                echo "Moving read write branch to rescue overlayed file system... "
+		if [ ! -e "/mnt/rescue/mnt/rescRW" ]; then
+                        /bin/mkdir "/mnt/rescue/mnt/rescRW" > /var/tmp.log 2>&1
+                fi
+                /bin/mount --move /mnt/rescRW /mnt/rescue/mnt/rescRW >> /var/tmp.log 2>&1
+                if [ "$?" -ne "0" ]; then
+			# undo anything that has been done up to this point because of failure
+			/bin/mount --move /mnt/rescue/dev /dev
+			/bin/umount /mnt/rescue
+                        /bin/umount /mnt/rescRO
+                        /bin/umount /mnt/rescRW
+
+                        ERROR="Failed to move read write branch to rescue fs."
+                        echo -e "\nMoving read write branch to rescue overlayed file system..."  >> /var/gnxBoot.log
+                        cat /var/tmp.log >> /var/gnxBoot.log
+                fi
+        fi
+
+	if [ -z "$ERROR" ]; then
+                echo "Moving read only branch to rescue overlayed file system... "
+                if [ ! -e "/mnt/rescue/mnt/rescRO" ]; then
+                        /bin/mkdir "/mnt/rescue/mnt/rescRO" > /var/tmp.log 2>&1
+                fi
+		/bin/mount --move /mnt/rescRO /mnt/rescue/mnt/rescRO > /var/tmp.log 2>&1
+                if [ "$?" -ne "0" ]; then
+                        # undo anything that has been done up to this point because of failure
+			/bin/mount --move /mnt/rescue/mnt/rescRW /mnt/rescRW
+                        /bin/mount --move /mnt/rescue/dev /dev
+                        /bin/umount /mnt/rescue
+                        /bin/umount /mnt/rescRO
+                        /bin/umount /mnt/rescRW
+
+			ERROR="Failed to move read only branch to rescue fs."
+                        echo -e "\nMoving read only branch to rescue overlayed file system..."  >> /var/gnxBoot.log
+                        cat /var/tmp.log >> /var/gnxBoot.log
+                fi
+        fi
+
+	if [ -z "$ERROR" ]; then
+		echo "Switching to rescue system..."
+		/bin/umount /sys
+		/bin/umount /proc
+		cp /var/gnxBoot.log /mnt/rescue/var/gnxBoot.log
+		exec /sbin/switch_root -c /dev/console /mnt/rescue /sbin/init
+		if [ "$?" -ne "0" ]; then	# this only happens if exec fails, switch_root is the antithesis of an atomic operation
+                        # undo anything that has been done up to this point because of failure
+			/bin/mount --move /mnt/rescue/mnt/rescRO /mnt/rescRO
+			/bin/mount --move /mnt/rescue/mnt/rescRW /mnt/rescRW
+                        /bin/mount --move /mnt/rescue/dev /dev
+                        /bin/umount /mnt/rescue
+                        /bin/umount /mnt/rescRO
+                        /bin/umount /mnt/rescRW
+
+			ERROR="Failed to switch to rescue file system."
+			echo -e "\nFailed to switch to rescue file system." >> /var/gnxBoot.log
+		fi
+	fi
+
+fi
+
+### Phase 3: Initramfs shell ###
+# if the script reaches this point we have an error and we will drop to the initramfs shell (not good)
+echo "$ERROR"
+echo -e "$ERROR \n" >> /var/gnxBoot.log
+echo ""
+echo "Everything failed :-/"
+echo "/var/gnxBoot.log may provide more insight"
+echo "Launching root shell. Good luck..."
+echo ""		
+
+export PATH="/bin:/usr/bin:/sbin:/usr/sbin"
+exec /bin/sh
+

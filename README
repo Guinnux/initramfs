@@ -1,0 +1,42 @@
+DEVELOPERS PLEASE NOTE: You can use the debugInit as an init, just rename it init and put it in the sbin of the initramfs...this allows you to test the initramfs (i.e. it just drops you to the shell immediatley so you can test changes manually)
+
+These instructions may be outdated and better ones may be found on the wiki.
+
+The actual initramfs that should be used when compiling the kernel is found in the initramfs tarball. At present the way it is built is rather strange but it is outlined here. If you need to use it, extract it and point the kernel menuconfig to it (you no longer need to extract it as root because the kernel should be built with devtmpfs which allows you to mount all the special files the kernel can create)
+
+TO BUILD YOUR OWN:
+We first need to add the Guinnux toolchain  bin directory to the path.
+$ export PATH=/home/<your name>/WhereItIs/bin:$PATH
+
+We need to build a minimal busybox with eglibc (which is in the toolchain)...
+$ tar -xf busybox-<version>.tar.bz2
+$ cd busybox-<version>
+
+Busybox:
+These days we can use the pretty large busybox from the rescue system, this means we don't have so much maintenance...So go get the opk package and extract its data somewhere (we'll need it later)
+
+Now we need e2fsprogs. We need it because the old initramfs did a weird method to do filesystem checks, where it would mount the SD card, get e2fsck from sbin, eglibc standard libs from lib and then use those to check the very filesystem they came from! No!
+We use eglibc in the initramfs now, so rather just use the e2fsprogs-standalone package for guinnux. Extract it somewhere.
+
+That should do it...now we need to put this all into the initramfs we are going to ship.
+Make a directory for this new initramfs and do the following.
+1) Place the skeleton directory in the initramfs directory
+2) Place the init script of you choice in the root of the initramfs
+3) Copy the busybox data that we got from the opk package earlier into the initramfs root.
+	You can go ahead and delete the udhcpc stuff, we don't use it in the initramfs so it's untidy otherwise (but it's not worth the effort to maintain two busybox packages without udhcpc) 
+		a) /etc/udhcpc
+		b) /usr/share/udhcpc
+		c) /var/*	(more stuff we don't need)
+4) Copy the e2fsprogs filesystem you just built into the initramfs directory.
+5) We need to get the C libraries into the initramfs, namely the eglibc ones. Take the opk package from the repositories and extract its raw contents into the root of the initramfs. Because we built all this with the Guinnux toolchain it should be linked to properly. Delete the following directories and files (they are not required):
+	a)usr/share
+	b)etc/localtime
+6) We need the aufs util package installed so we can mount aufs union filesystems...extract the contents of the opk package into the root of the initramfs.
+
+Because we can't use ldd on these cross compiled targets you can use:
+$ readelf -a <the target exe or lib> | grep "Shared library:"
+Use this if you are unsure that you have stisfied all linkage dependencies. You can use that in conjunction with a find on every file in the initramfs to produce a list of required libraries for the initramfs. But...we should be okay.
+7) Strip everything:
+$ find <path to initramfs> -type f -exec <cross compiler prefix tuple>-strip -v {} \;
+
+To commit your new build to git, please tarball the initramfs as git is the bane of empty directories (even thought we might need them).
