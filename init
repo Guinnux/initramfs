@@ -66,15 +66,21 @@ if [ -z "$ERROR" ]; then
 				init\=*)
 					init="`echo $i | awk -F"init=" '{print $2}' | awk -F" " '{print $1}'`"
 					;;
-				rescue\=*)
-					rescue="`echo $i | awk -F"rescue=" '{print $2}' | awk -F" " '{print $1}'`"
-					;;
+                                rescue\=*)
+                                        rescue="`echo $i | awk -F"rescue=" '{print $2}' | awk -F" " '{print $1}'`"
+                                        ;;
+                                rescue_type\=*)
+                                        rescue_type="-t `echo $i | awk -F"rescue_type=" '{print $2}' | awk -F" " '{print $1}'`"
+                                        ;;
+                                rescue_opts\=*)
+                                        rescue_opts="-o `echo $i | awk -F"rescue_opts=" '{print $2}' | awk -F" " '{print $1}'`"
+                                        ;;
 			esac
 		done
 		#first, if one "root" cmdline argument is given all must be given
-		if [ -n "$root" ] || [ -n "$root_type" ] || [ -n "$root_opts" ] || [ -n "$rescue" ]; then	#if one of these is given
-			if [ -z "$root" ] || [ -z "$root_type" ] || [ -z "$root_opts" ] || [ -z "$rescue" ]; then	#but one or more is not given
-				ERROR="Failed to determine cmdline options. When providing cmdline options(root, root_type, root_opts and rescue), all must be given."
+		if [ -n "$root" ] || [ -n "$root_type" ] || [ -n "$root_opts" ]; then	#if one of these is given
+			if [ -z "$root" ] || [ -z "$root_type" ] || [ -z "$root_opts" ]; then	#but one or more is not given
+				ERROR="Failed to determine cmdline options. When providing cmdline options(root, root_type and root_opts), all must be given."
 			fi
 		fi
 		#defaults
@@ -82,7 +88,9 @@ if [ -z "$ERROR" ]; then
 		if [ -z "$root_type" ]; then root_type="-t ext4"; fi
 		if [ -z "$root_opts" ]; then root_opts="-o data=journal"; fi
 		if [ -z "$init" ]; then init="/sbin/init"; fi
-		if [ -z "$rescue" ]; then init="/dev/mtdblok5"; fi
+		if [ -z "$rescue" ]; then rescue="/dev/mtdblok5"; fi
+		if [ -z "$rescue_type" ]; then rescue_type="-t jffs2"; fi
+		if [ -z "$rescue_opts" ]; then rescue_opts="-o ro"; fi
 	fi
 fi
 
@@ -91,18 +99,18 @@ fi
 # keep checking if the root block device is available or timeout otherwise
 let "time_count = 1"
 if [ -z "$ERROR" ]; then
-	while [ ! -e "/sys/block/mmcblk0/`basename $root`" ] && [ ! "$time_count" -gt "10" ]; do
-		# sleep for half a second
-		/bin/usleep 500000
-		echo "wait SD"
-		let "time_count += 1"
-	done
+        while [ ! -e "/sys/block/mmcblk0/`basename $root`" ] && [ ! "$time_count" -gt "10" ]; do
+                # sleep for half a second
+                /bin/usleep 500000
+                echo "wait SD"
+                let "time_count += 1"
+        done
 fi
 
 if [ -z "$ERROR" ]; then
 
 	# check that the root block device exists in case we timed out above	
-	if [ -e "/sys/block/mmcblk0/`basename $root`" ]; then
+	if [ -h "/sys/class/block/`basename $root`" ]; then
 
 		echo "Running file system check on root..."
 		/sbin/e2fsck -v -p $root > /var/tmp.log 2>&1 
@@ -157,7 +165,7 @@ if [ -z "$ERROR" ]; then
 			fi
 		fi
 	else
-		ERROR="The root block device, $root, was not found. Available block devices are:\n `/bin/ls -1 /sys/block | grep -v loop | grep -v ram | tr ' ' '\n' ` "
+		ERROR="The root block device, $root, was not found. Available block devices are:\n `/bin/ls -1 /sys/class/block | grep -v loop | grep -v ram | tr ' ' '\n' ` "
 	fi
 
 	echo -e "$ERROR \n" >> /var/gnxBoot.log
@@ -171,69 +179,72 @@ if [ -z "$ERROR" ]; then
 
 	ERROR=""
 
-	echo "Mounting jffs2 rescue file system..."
-	/bin/mount -t jffs2 -o ro $rescue /mnt/rescRO > /var/tmp.log 2>&1
-	if [ "$?" -ne "0" ]; then
-		ERROR="Failed to mount the rescue filesystem..."
-		echo -e "\nMounting jffs2 rescue file system..." >> /var/gnxBoot.log
-		cat /var/tmp.log >> /var/gnxBoot.log
-	fi
+        echo "Mounting rescue file system..."
+        echo "Device:        $rescue"
+        echo "Type options:  $rescue_type"
+        echo "Mount options: $rescue_opts"
+        /bin/mount $rescue_type $rescue_opts $rescue /mnt/rescRO > /var/tmp.log 2>&1
+        if [ "$?" -ne "0" ]; then
+                ERROR="Failed to mount the rescue filesystem..."
+                echo -e "\nMounting rescue file system..." >> /var/gnxBoot.log
+                cat /var/tmp.log >> /var/gnxBoot.log
+        fi
 
-	if [ -z "$ERROR" ]; then
-		echo "Mounting rescue temporary file system for volatile overlay..."
-		/bin/mount -t tmpfs -o size=50% rescRW /mnt/rescRW  > /var/tmp.log 2>&1
-		if [ "$?" -ne "0" ]; then
-			# undo anything that has been done up to this point because of failure
-			/bin/umount /mnt/rescRO
+        if [ -z "$ERROR" ]; then
+                echo "Mounting rescue temporary file system for volatile overlay..."
+                /bin/mount -t tmpfs -o size=50% rescRW /mnt/rescRW  > /var/tmp.log 2>&1
+                if [ "$?" -ne "0" ]; then
+                        # undo anything that has been done up to this point because of failure
+                        /bin/umount /mnt/rescRO
 
-			ERROR="Failed to create temporary file system for rescue system volatile overlay."
-			echo -e "\nMounting rescue temporary file system for volatile overlay..."  >> /var/gnxBoot.log
-			cat /var/tmp.log >> /var/gnxBoot.log
-		fi
-	fi
+                        ERROR="Failed to create temporary file system for rescue system volatile overlay."
+                        echo -e "\nMounting rescue temporary file system for volatile overlay..."  >> /var/gnxBoot.log
+                        cat /var/tmp.log >> /var/gnxBoot.log
+                fi
+        fi
 
-	if [ -z "$ERROR" ]; then
-		echo "Overlaying rescue file systems..."
-		/bin/mount -t overlayfs -o lowerdir=/mnt/rescRO,upperdir=/mnt/rescRW rescue /mnt/rescue  > /var/tmp.log 2>&1
-		if [ "$?" -ne "0" ]; then
-			# undo anything that has been done up to this point because of failure
+        if [ -z "$ERROR" ]; then
+                echo "Overlaying rescue file systems..."
+                /bin/mount -t overlayfs -o lowerdir=/mnt/rescRO,upperdir=/mnt/rescRW rescue /mnt/rescue  > /var/tmp.log 2>&1
+                if [ "$?" -ne "0" ]; then
+                        # undo anything that has been done up to this point because of failure
                         /bin/umount /mnt/rescRO
                         /bin/umount /mnt/rescRW
 
-			ERROR="Failed to overlay read-write file system on rescue"
-			echo -e "\nOverlaying rescue file systems..."  >> /var/gnxBoot.log
-			cat /var/tmp.log >> /var/gnxBoot.log
-		fi
-	fi
+                        ERROR="Failed to overlay read-write file system on rescue"
+                        echo -e "\nOverlaying rescue file systems..."  >> /var/gnxBoot.log
+                        cat /var/tmp.log >> /var/gnxBoot.log
+                fi
+        fi
 
-	if [ -z "$ERROR" ]; then
-		echo "Moving mounted device files to rescue fs... "
-		if [ ! -e "/mnt/rescue/dev" ]; then
-			/bin/mkdir "/mnt/rescue/dev" > /var/tmp.log 2>&1
-		fi
-		/bin/mount --move /dev /mnt/rescue/dev >> /var/tmp.log 2>&1
-		if [ "$?" -ne "0" ]; then
-			# undo anything that has been done up to this point because of failure
-			/bin/umount /mnt/rescue
+        if [ -z "$ERROR" ]; then
+                echo "Moving mounted device files to rescue fs... "
+                if [ ! -e "/mnt/rescue/dev" ]; then
+                        /bin/mkdir "/mnt/rescue/dev" > /var/tmp.log 2>&1
+                fi
+                /bin/mount --move /dev /mnt/rescue/dev >> /var/tmp.log 2>&1
+                if [ "$?" -ne "0" ]; then
+                        # undo anything that has been done up to this point because of failure
+                        /bin/umount /mnt/rescue
                         /bin/umount /mnt/rescRO
-			/bin/umount /mnt/rescRW
+                        /bin/umount /mnt/rescRW
 
-			ERROR="Failed to move device files to rescue fs."
-			echo -e "\nMoving mounted device files to rescue fs..."  >> /var/gnxBoot.log
-			cat /var/tmp.log >> /var/gnxBoot.log
-		fi
-	fi
+                        ERROR="Failed to move device files to rescue fs."
+                        echo -e "\nMoving mounted device files to rescue fs..."  >> /var/gnxBoot.log
+                        cat /var/tmp.log >> /var/gnxBoot.log
+                fi
+        fi
 
-	if [ -z "$ERROR" ]; then
+        if [ -z "$ERROR" ]; then
                 echo "Moving read write branch to rescue overlayed file system... "
-		if [ ! -e "/mnt/rescue/mnt/rescRW" ]; then
+                if [ ! -e "/mnt/rescue/mnt/rescRW" ]; then
                         /bin/mkdir "/mnt/rescue/mnt/rescRW" > /var/tmp.log 2>&1
                 fi
                 /bin/mount --move /mnt/rescRW /mnt/rescue/mnt/rescRW >> /var/tmp.log 2>&1
                 if [ "$?" -ne "0" ]; then
-			# undo anything that has been done up to this point because of failure
-			/bin/mount --move /mnt/rescue/dev /dev
-			/bin/umount /mnt/rescue
+                        # undo anything that has been done up to this point because of failure
+                        /bin/mount --move /mnt/rescue/dev /dev
+                        /bin/umount /mnt/rescue
                         /bin/umount /mnt/rescRO
                         /bin/umount /mnt/rescRW
 
@@ -243,21 +254,21 @@ if [ -z "$ERROR" ]; then
                 fi
         fi
 
-	if [ -z "$ERROR" ]; then
+        if [ -z "$ERROR" ]; then
                 echo "Moving read only branch to rescue overlayed file system... "
                 if [ ! -e "/mnt/rescue/mnt/rescRO" ]; then
                         /bin/mkdir "/mnt/rescue/mnt/rescRO" > /var/tmp.log 2>&1
                 fi
-		/bin/mount --move /mnt/rescRO /mnt/rescue/mnt/rescRO > /var/tmp.log 2>&1
+                /bin/mount --move /mnt/rescRO /mnt/rescue/mnt/rescRO > /var/tmp.log 2>&1
                 if [ "$?" -ne "0" ]; then
                         # undo anything that has been done up to this point because of failure
-			/bin/mount --move /mnt/rescue/mnt/rescRW /mnt/rescRW
+                        /bin/mount --move /mnt/rescue/mnt/rescRW /mnt/rescRW
                         /bin/mount --move /mnt/rescue/dev /dev
                         /bin/umount /mnt/rescue
                         /bin/umount /mnt/rescRO
                         /bin/umount /mnt/rescRW
 
-			ERROR="Failed to move read only branch to rescue fs."
+                        ERROR="Failed to move read only branch to rescue fs."
                         echo -e "\nMoving read only branch to rescue overlayed file system..."  >> /var/gnxBoot.log
                         cat /var/tmp.log >> /var/gnxBoot.log
                 fi
