@@ -110,7 +110,7 @@ fi
 if [ -z "$ERROR" ]; then
 
 	# check that the root block device exists in case we timed out above	
-	if [ -h "/sys/class/block/`basename $root`" ]; then
+	if [ -e "/sys/block/mmcblk0/`basename $root`" ]; then
 
 		echo "Running file system check on root..."
 		/sbin/e2fsck -v -p $root > /var/tmp.log 2>&1 
@@ -165,7 +165,7 @@ if [ -z "$ERROR" ]; then
 			fi
 		fi
 	else
-		ERROR="The root block device, $root, was not found. Available block devices are:\n `/bin/ls -1 /sys/class/block | grep -v loop | grep -v ram | tr ' ' '\n' ` "
+		ERROR="The root block device, $root, was not found. Available block devices are:\n `/bin/ls -1 /sys/block | grep -v loop | grep -v ram | tr ' ' '\n' ` "
 	fi
 
 	echo -e "$ERROR \n" >> /var/gnxBoot.log
