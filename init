@@ -66,29 +66,36 @@ if [ -z "$ERROR" ]; then
 				init\=*)
 					init="`echo $i | awk -F"init=" '{print $2}' | awk -F" " '{print $1}'`"
 					;;
-                                rescue\=*)
-                                        rescue="`echo $i | awk -F"rescue=" '{print $2}' | awk -F" " '{print $1}'`"
-                                        ;;
-                                rescue_type\=*)
-                                        rescue_type="-t `echo $i | awk -F"rescue_type=" '{print $2}' | awk -F" " '{print $1}'`"
-                                        ;;
-                                rescue_opts\=*)
-                                        rescue_opts="-o `echo $i | awk -F"rescue_opts=" '{print $2}' | awk -F" " '{print $1}'`"
-                                        ;;
+                rescue\=*)
+                    rescue="`echo $i | awk -F"rescue=" '{print $2}' | awk -F" " '{print $1}'`"
+                    ;;
+                rescue_type\=*)
+                    rescue_type="-t `echo $i | awk -F"rescue_type=" '{print $2}' | awk -F" " '{print $1}'`"
+                    ;;
+                rescue_opts\=*)
+                    rescue_opts="-o `echo $i | awk -F"rescue_opts=" '{print $2}' | awk -F" " '{print $1}'`"
+                    ;;
+                bootrescue*)
+                    bootrescue="yes"
+                    ;;    
 			esac
 		done
-		#first, if one "root" cmdline argument is given all must be given
-		if [ -n "$root" ] || [ -n "$root_type" ] || [ -n "$root_opts" ]; then	#if one of these is given
-			if [ -z "$root" ] || [ -z "$root_type" ] || [ -z "$root_opts" ]; then	#but one or more is not given
-				ERROR="Failed to determine cmdline options. When providing cmdline options(root, root_type and root_opts), all must be given."
-			fi
-		fi
+		if [ -z "$bootrescue" ]; then
+        #first, if one "root" cmdline argument is given all must be given
+		 	if [ -n "$root" ] || [ -n "$root_type" ] || [ -n "$root_opts" ]; then	#if one of these is given
+			 	if [ -z "$root" ] || [ -z "$root_type" ] || [ -z "$root_opts" ]; then	#but one or more is not given
+				 	ERROR="Failed to determine cmdline options. When providing cmdline options(root, root_type and root_opts), all must be given."
+		 	  	fi
+		 	fi
+	    else
+	    	echo "Detecting a forced rescue boot"
+	 	fi
 		#defaults
 		if [ -z "$root" ]; then root="/dev/mmcblk0p1"; fi
 		if [ -z "$root_type" ]; then root_type="-t ext4"; fi
 		if [ -z "$root_opts" ]; then root_opts="-o data=journal"; fi
 		if [ -z "$init" ]; then init="/sbin/init"; fi
-		if [ -z "$rescue" ]; then rescue="/dev/mtdblok5"; fi
+		if [ -z "$rescue" ]; then rescue="/dev/mtdblock1"; fi
 		if [ -z "$rescue_type" ]; then rescue_type="-t jffs2"; fi
 		if [ -z "$rescue_opts" ]; then rescue_opts="-o ro"; fi
 	fi
@@ -98,7 +105,7 @@ fi
 
 # keep checking if the root block device is available or timeout otherwise
 let "time_count = 1"
-if [ -z "$ERROR" ]; then
+if [ -z "$ERROR" ] && [ -z "$bootrescue" ]; then
         while [ ! -e "/sys/block/mmcblk0/`basename $root`" ] && [ ! "$time_count" -gt "10" ]; do
                 # sleep for half a second
                 /bin/usleep 500000
@@ -108,8 +115,9 @@ if [ -z "$ERROR" ]; then
 fi
 
 if [ -z "$ERROR" ]; then
-
-	# check that the root block device exists in case we timed out above	
+ 
+	if [ -z "$bootrescue" ]; then
+    # check that the root block device exists in case we timed out above	
 	if [ -e "/sys/block/mmcblk0/`basename $root`" ]; then
 
 		echo "Running file system check on root..."
@@ -175,8 +183,10 @@ if [ -z "$ERROR" ]; then
 	echo "..failed to boot Guinnux."
 	echo ""
 	echo "Switching to backup system..."
-	echo ""
-
+	echo "" 
+    else
+    	echo "Forcing a rescue boot"
+    fi
 	ERROR=""
 
         echo "Mounting rescue file system..."
@@ -200,12 +210,17 @@ if [ -z "$ERROR" ]; then
                         ERROR="Failed to create temporary file system for rescue system volatile overlay."
                         echo -e "\nMounting rescue temporary file system for volatile overlay..."  >> /var/gnxBoot.log
                         cat /var/tmp.log >> /var/gnxBoot.log
+                else
+            	    /bin/mkdir -p /mnt/rescRW/upper
+            	    /bin/mkdir -p /mnt/rescRW/work
+            	    echo "Created overlay structure"
                 fi
+            
         fi
 
         if [ -z "$ERROR" ]; then
                 echo "Overlaying rescue file systems..."
-                /bin/mount -t overlayfs -o lowerdir=/mnt/rescRO,upperdir=/mnt/rescRW rescue /mnt/rescue  > /var/tmp.log 2>&1
+                /bin/mount -t overlay -o lowerdir=/mnt/rescRO,upperdir=/mnt/rescRW/upper,workdir=/mnt/rescRW/work rescue /mnt/rescue  > /var/tmp.log 2>&1
                 if [ "$?" -ne "0" ]; then
                         # undo anything that has been done up to this point because of failure
                         /bin/umount /mnt/rescRO
