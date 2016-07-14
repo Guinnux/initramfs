@@ -106,10 +106,10 @@ fi
 # keep checking if the root block device is available or timeout otherwise
 let "time_count = 1"
 if [ -z "$ERROR" ] && [ -z "$bootrescue" ]; then
-        while [ ! -e "/sys/block/mmcblk0/`basename $root`" ] && [ ! "$time_count" -gt "10" ]; do
+        while [ ! -e $root ] && [ ! "$time_count" -gt "10" ]; do
                 # sleep for half a second
                 /bin/usleep 500000
-                echo "wait SD"
+                echo "wait $root"
                 let "time_count += 1"
         done
 fi
@@ -118,7 +118,7 @@ if [ -z "$ERROR" ]; then
  
 	if [ -z "$bootrescue" ]; then
     # check that the root block device exists in case we timed out above	
-	if [ -e "/sys/block/mmcblk0/`basename $root`" ]; then
+	if [ -e $root ]; then
 
 		echo "Running file system check on root..."
 		/sbin/e2fsck -v -p $root > /var/tmp.log 2>&1 
@@ -169,7 +169,8 @@ if [ -z "$ERROR" ]; then
 			else
 				ERROR="$init not found on root file system!Aborting..."
 				# We should unmount the rootfs then, or else rescue will fail to mount
-				/bin/umount /mnt
+				/bin/mount --move /mnt/dev /dev
+				/bin/umount  /mnt
 			fi
 		fi
 	else
