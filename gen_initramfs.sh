@@ -64,6 +64,10 @@ $ARCH_PREFIX-strip $IMG_DIR/usr/lib/*.so
 $ARCH_PREFIX-strip $IMG_DIR/usr/bin/*
 
 install -D -m755 ./init  $IMG_DIR/init
+install -d -m644 $IMG_DIR/mnt/rescRO
+install -d -m644 $IMG_DIR/mnt/rescRW
+install -d -m644 $IMG_DIR/mnt/rescue
+install -d -m644 $IMG_DIR/mnt/gnx
 
 tar -cvzf initramfs-$ARCH.tar.gz image/$ARCH
 
