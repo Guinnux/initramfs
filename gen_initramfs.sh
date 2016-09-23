@@ -40,6 +40,7 @@ $ARCH_PREFIX-pacman -r $IMG_DIR -S --noconfirm filesystem
 
 rm -fR $IMG_DIR/etc/profile
 $ARCH_PREFIX-pacman -r $IMG_DIR -S --noconfirm glibc
+$ARCH_PREFIX-pacman -r $IMG_DIR -S --noconfirm gcc-libs
 $ARCH_PREFIX-pacman -r $IMG_DIR -S --noconfirm busybox-rescue
 $ARCH_PREFIX-pacman -r $IMG_DIR -S --noconfirm e2fsprogs-rescue
 
