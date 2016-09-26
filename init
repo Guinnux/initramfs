@@ -180,8 +180,8 @@ if [ -z "$ERROR" ]; then
 			/bin/mount --move /dev /mnt/dev > /var/tmp.log 2>&1
 			if [ "$?" -ne "0" ]; then
 				# We should unmount the rootfs then, or else rescue will fail to mount
-				/bin/umount /mnt
 				/bin/umount /mnt/boot
+				/bin/umount /mnt
 				ERROR="Failed to move device files to rootfs."
 				echo -e "\nMoving mounted device files to rootfs..."  >> /var/gnxBoot.log
 				cat /var/tmp.log >> /var/gnxBoot.log
