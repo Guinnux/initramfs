@@ -75,6 +75,15 @@ if [ -z "$ERROR" ]; then
                 rescue_opts\=*)
                     rescue_opts="-o `echo $i | awk -F"rescue_opts=" '{print $2}' | awk -F" " '{print $1}'`"
                     ;;
+		        boot\=*)
+		            boot="`echo $i | awk -F"boot=" '{print $2}' | awk -F" " '{print $1}'`"
+		            ;;
+		        boot_type\=*)
+		            boot_type="-t `echo $i | awk -F"boot_type=" '{print $2}' | awk -F" " '{print $1}'`"
+		            ;;
+		        boot_opts\=*)
+		            boot_opts="-o `echo $i | awk -F"boot_opts=" '{print $2}' | awk -F" " '{print $1}'`"
+		            ;;
                 bootrescue*)
                     bootrescue="yes"
                     ;;    
@@ -98,6 +107,10 @@ if [ -z "$ERROR" ]; then
 		if [ -z "$rescue" ]; then rescue="/dev/mtdblock1"; fi
 		if [ -z "$rescue_type" ]; then rescue_type="-t jffs2"; fi
 		if [ -z "$rescue_opts" ]; then rescue_opts="-o ro"; fi
+		if [ ! -z "$boot" ]; then
+			if [ -z "$boot_type" ]; then boot_type="-t vfat"; fi
+			if [ -z "$boot_opts" ]; then boot_opts="-o rw"; fi
+		fi
 	fi
 fi
 
@@ -146,6 +159,21 @@ if [ -z "$ERROR" ]; then
 				cat /var/tmp.log >> /var/gnxBoot.log
 			fi
 		fi
+		
+		if [ -z "$ERROR" ]; then
+			if [ ! -z $boot ]; then
+				echo "Mounting boot file system... "
+				mkdir -p /mnt/boot
+				/bin/mount $boot_type $boot_opts $boot /mnt/boot > /var/tmp.log 2>&1
+				if [ "$?" -ne "0" ]; then
+					/bin/umount /mnt
+					ERROR="The boot file system failed to mount."
+					echo -e "\nMounting boot file system..." >> /var/gnxBoot.log
+					cat /var/tmp.log >> /var/gnxBoot.log
+				fi
+		    fi
+		fi
+		
 
 		if [ -z "$ERROR" ]; then
 			echo "Moving mounted device files to rootfs... "
@@ -153,6 +181,7 @@ if [ -z "$ERROR" ]; then
 			if [ "$?" -ne "0" ]; then
 				# We should unmount the rootfs then, or else rescue will fail to mount
 				/bin/umount /mnt
+				/bin/umount /mnt/boot
 				ERROR="Failed to move device files to rootfs."
 				echo -e "\nMoving mounted device files to rootfs..."  >> /var/gnxBoot.log
 				cat /var/tmp.log >> /var/gnxBoot.log
@@ -170,6 +199,7 @@ if [ -z "$ERROR" ]; then
 				ERROR="$init not found on root file system!Aborting..."
 				# We should unmount the rootfs then, or else rescue will fail to mount
 				/bin/mount --move /mnt/dev /dev
+				/bin/umount /mnt/boot
 				/bin/umount  /mnt
 			fi
 		fi
